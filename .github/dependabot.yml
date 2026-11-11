@@ -1,0 +1,25 @@
+# Keeps pinned versions current: npm lockfiles, Docker base images and the SHA-pinned
+# GitHub Actions. Every update arrives as a PR and must pass the full CI/CD pipeline.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories: ['/', '/backend', '/frontend']
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

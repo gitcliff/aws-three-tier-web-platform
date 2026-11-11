@@ -11,17 +11,17 @@
 #
 # No secrets are used at build time. Credentials arrive as environment variables at runtime.
 
-ARG NODE_IMAGE=node:22-alpine
+# Base images are pinned by digest for reproducible builds; Dependabot proposes updates.
 
 # ---------------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS deps
+FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS deps
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 # Exact versions from the lockfile; no install scripts from third-party packages.
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # ---------------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS build
+FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS build
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -30,7 +30,7 @@ COPY backend/src ./src
 RUN npm run build
 
 # ---------------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS final
+FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS final
 
 # Pull in OS security patches released since the base image was built, then remove the
 # package managers the runtime never uses (smaller image, fewer CVEs to track).

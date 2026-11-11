@@ -7,11 +7,10 @@
 # The bundle contains no environment-specific values; the API location is supplied at
 # container start through API_UPSTREAM, so one image is promoted unchanged across environments.
 
-ARG NODE_IMAGE=node:22-alpine
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.29-alpine
+# Base images are pinned by digest for reproducible builds; Dependabot proposes updates.
 
 # ---------------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS build
+FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS build
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -21,7 +20,7 @@ COPY frontend/src ./src
 RUN npm run build
 
 # ---------------------------------------------------------------------------------------
-FROM ${NGINX_IMAGE} AS final
+FROM nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6 AS final
 
 # The base image runs as uid 101; switch to root only to apply OS patches.
 USER root

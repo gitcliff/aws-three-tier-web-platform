@@ -1,0 +1,11 @@
+# Gitleaks configuration used by CI (.github/workflows/ci-cd.yml).
+#
+# Uses the full default rule set with no exceptions. If a confirmed false positive ever needs
+# allowing, add an [[allowlists]] entry that matches both a specific path AND a specific
+# pattern, so the exception cannot hide a real secret elsewhere. Never allowlist a real
+# credential: rotate it, then remove it from history.
+
+title = "task-platform gitleaks config"
+
+[extend]
+useDefault = true
