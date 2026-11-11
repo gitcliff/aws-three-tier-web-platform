@@ -14,14 +14,14 @@
 # Base images are pinned by digest for reproducible builds; Dependabot proposes updates.
 
 # ---------------------------------------------------------------------------------------
-FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS deps
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS deps
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 # Exact versions from the lockfile; no install scripts from third-party packages.
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # ---------------------------------------------------------------------------------------
-FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -30,7 +30,7 @@ COPY backend/src ./src
 RUN npm run build
 
 # ---------------------------------------------------------------------------------------
-FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS final
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS final
 
 # Pull in OS security patches released since the base image was built, then remove the
 # package managers the runtime never uses (smaller image, fewer CVEs to track).

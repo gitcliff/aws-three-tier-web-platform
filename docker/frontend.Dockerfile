@@ -10,7 +10,7 @@
 # Base images are pinned by digest for reproducible builds; Dependabot proposes updates.
 
 # ---------------------------------------------------------------------------------------
-FROM node:22-alpine@sha256:8af05ed9012b24a9205075889b231b65b47f8cc299f3034de2b8a864780ee07f AS build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts
