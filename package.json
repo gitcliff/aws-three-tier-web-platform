@@ -1,0 +1,15 @@
+{
+  "name": "aws-three-tier-web-platform",
+  "private": true,
+  "description": "Task manager: React + Express + PostgreSQL, containerized and shipped to Amazon ECR",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.10.0"
+  }
+}
