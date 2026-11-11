@@ -1,0 +1,68 @@
+# Rendered at container start: ${API_UPSTREAM} is replaced from the environment.
+
+server_tokens off;
+
+# Reuse the caller's request id when present (e.g. from a load balancer), else nginx's own,
+# so one id follows a request from the edge through nginx into the API logs.
+map $http_x_request_id $req_id {
+    default $http_x_request_id;
+    ""      $request_id;
+}
+
+server {
+    listen 8080;
+    listen [::]:8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # The API accepts at most 16 KB bodies; reject anything far larger at the edge.
+    client_max_body_size 64k;
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Application tier. Only /api/ is forwarded; the API's /health endpoints stay internal.
+    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Request-Id $req_id;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        # The edge is the single source of these headers. Drop the API's own (Helmet) copies
+        # so browsers never receive duplicate or conflicting values.
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Cross-Origin-Opener-Policy;
+        include /etc/nginx/snippets/security-headers.conf;
+    }
+
+    # Container health check: nginx is up and serving.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Vite emits content-hashed file names, so these can be cached forever.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri =404;
+    }
+
+    # SPA entry point: always revalidate so a deploy is picked up immediately.
+    location / {
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri $uri/ /index.html;
+    }
+}

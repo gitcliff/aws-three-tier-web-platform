@@ -1,6 +1,33 @@
-# Local orchestration for the three tiers.
-# Phase 1: data tier only. The API and web tiers are added in later phases.
+# Local orchestration of the three tiers:
+#
+#   browser ──▶ web (nginx :8080) ──/api──▶ api (Express :4000) ──▶ db (PostgreSQL :5432)
+#                                                      ▲
+#                       migrate (one-shot, schema owner) ┘ runs before api starts
+#
+# Networks enforce the tiering: `web` can reach only `api`; only `api` and `migrate`
+# can reach `db`.
+#
+# Usage:  cp .env.example .env   (fill in passwords)   then   docker compose up -d --build
+# Images default to locally built tags; set API_IMAGE / WEB_IMAGE to run ECR images instead.
+
 name: task-platform
+
+x-hardening:
+  &hardening # Root filesystem is read-only; writable scratch space is mounted explicitly as tmpfs.
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+
+x-api-build: &api-build
+  context: .
+  dockerfile: docker/backend.Dockerfile
+
+x-db-connection: &db-connection
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_NAME: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+  DB_SSL: 'false'
+  LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
   db:
@@ -16,7 +43,7 @@ services:
       - db-data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d:ro
     ports:
-      # Loopback only: the database is never exposed on the host's network interfaces.
+      # Loopback only, for local tools such as psql. Never exposed on the host's network.
       - '127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432'
     healthcheck:
       # Check over TCP, not the Unix socket: during first-boot init Postgres runs a temporary
@@ -26,11 +53,78 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    networks:
-      - backend
+    networks: [data]
+
+  migrate:
+    <<: *hardening
+    image: ${API_IMAGE:-task-api:local}
+    build: *api-build
+    command: ['node', 'dist/migrate.js']
+    environment:
+      <<: *db-connection
+      # Schema owner: the only process that holds DDL rights, and it exits when done.
+      DB_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+    networks: [data]
+
+  api:
+    <<: *hardening
+    image: ${API_IMAGE:-task-api:local}
+    build: *api-build
+    restart: unless-stopped
+    environment:
+      <<: *db-connection
+      # Least-privilege runtime role: DML only.
+      DB_USER: ${APP_DB_USER:?set APP_DB_USER in .env}
+      DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      PORT: 4000
+    tmpfs: [/tmp]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Readiness, not just liveness: web waits until the API can actually reach the database.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    # No published port: the API is reachable only through nginx.
+    networks: [app, data]
+
+  web:
+    <<: *hardening
+    image: ${WEB_IMAGE:-task-web:local}
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: http://api:4000
+    # nginx (uid 101) writes its rendered config, cache and pid file here. tmpfs mounts are
+    # root-owned by default, so they are mounted owned by the nginx user.
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx:uid=101,gid=101
+      - /etc/nginx/conf.d:uid=101,gid=101
+    ports:
+      - '${WEB_HOST_PORT:-8080}:8080'
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [app]
 
 volumes:
   db-data:
 
 networks:
-  backend:
+  app:
+  data:

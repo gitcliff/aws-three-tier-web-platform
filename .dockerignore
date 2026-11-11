@@ -1,0 +1,30 @@
+# Allowlist: the build context starts empty and only what the Dockerfiles need is added.
+# Anything new (e.g. a stray .env, keys, local databases) is excluded by default, which is
+# the safest way to guarantee secrets never reach an image layer.
+*
+
+!backend/package.json
+!backend/package-lock.json
+!backend/tsconfig.json
+!backend/tsconfig.build.json
+!backend/src/
+
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/public/
+!frontend/src/
+
+!database/migrations/
+
+!docker/nginx/
+
+# Re-exclude anything that may sit inside an allowed directory.
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.test.ts
+**/*.test.tsx
