@@ -1,7 +1,9 @@
-# Copy to backend.hcl (git-ignored) and run: terraform init -backend-config=backend.hcl
-# The bucket must exist first; see infra/terraform/README.md for a one-time bootstrap.
-bucket       = "your-terraform-state-bucket"
-key          = "task-platform/ecr-oidc/terraform.tfstate"
+# For running this stack locally: copy to backend.hcl (git-ignored), then
+#   terraform init -backend-config=backend.hcl
+# The pipeline passes the same values from GitHub variables. Use the bucket created by
+# infra/bootstrap; its default encryption (customer-managed KMS key) applies to state, so
+# `encrypt` is deliberately not set here (it would override that with SSE-S3).
+bucket       = "task-platform-tfstate-123456789012-us-east-1"
+key          = "task-platform/ecr/terraform.tfstate"
 region       = "us-east-1"
-encrypt      = true
 use_lockfile = true

@@ -1,12 +1,14 @@
-# AWS infrastructure: ECR + GitHub OIDC
+# ECR stack: image repositories + push role
 
-Creates everything the CI/CD pipeline needs to publish images, and nothing else:
+Everything the CI/CD workflow needs to publish images, and nothing else. Changes are
+delivered by the **Terraform pipeline** (`.github/workflows/terraform.yml`), not applied by
+hand. The prerequisites (state bucket, GitHub OIDC provider, pipeline roles, permissions
+boundary) come from [`infra/bootstrap`](../bootstrap/README.md).
 
 | Resource                                       | Purpose                                                                                  |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `aws_ecr_repository.app["backend"/"frontend"]` | `task-platform/backend`, `task-platform/frontend`: immutable tags, scan on push, AES-256 |
 | `aws_ecr_lifecycle_policy.app[*]`              | expire untagged layers after 1 day; keep the newest 30 images                            |
-| `aws_iam_openid_connect_provider.github`       | trusts GitHub's OIDC issuer for the `sts.amazonaws.com` audience                         |
 | `aws_iam_role.github_ecr_push` + inline policy | assumable only by `repo:<owner>/<repo>:ref:refs/heads/main`; push-only on the two repos  |
 
 ## Security model
@@ -14,62 +16,39 @@ Creates everything the CI/CD pipeline needs to publish images, and nothing else:
 - **No access keys anywhere.** GitHub Actions exchanges a short-lived OIDC token for
   temporary credentials (≤ 1 hour; the workflow asks for 15 minutes).
 - **Trust is pinned exactly** (`StringEquals`, no wildcards) to this repository's `main`
-  branch. Pull requests, forks, other branches, tags and other repositories produce a
-  different `sub` claim and cannot assume the role.
-- **Least privilege.** The role may log in to ECR (`GetAuthorizationToken`, which AWS does
-  not allow scoping) and push to the two repositories, plus `DescribeImages` for the
-  workflow's idempotency check. It cannot pull, delete, change tag mutability or edit
-  repository or lifecycle policies.
+  branch. Pull requests, forks, other branches, tags and other repositories cannot assume it.
+- **Least privilege, enforced twice.** The inline policy grants only ECR login, push and
+  `DescribeImages`. The role also carries the bootstrap's permissions boundary, which caps it
+  at exactly that even if the inline policy were ever widened.
 - **Immutable tags.** An image tagged with a commit SHA can never be overwritten.
 
-These properties are enforced by tests (`tests/ecr_oidc.tftest.hcl`) that run in CI against a
-mocked AWS provider.
+`tests/ecr_oidc.tftest.hcl` enforces these properties against a mocked AWS provider.
 
-## Prerequisites
+## How changes are delivered
 
-- Terraform `~> 1.10` (CI uses 1.15.7) and AWS provider `~> 6.0` (locked in `.terraform.lock.hcl`).
-- AWS credentials for an **IAM administrator user or role, not the account root user**.
-- An S3 bucket for remote state (one-time bootstrap below).
+1. Edit files here and open a pull request. The Terraform workflow formats, validates and
+   tests both stacks, runs Trivy, and posts a **plan** (read-only role) in the job summary.
+2. Merge. The workflow plans again on `main` and saves the plan.
+3. The **apply** job waits for a reviewer to approve the `infrastructure` environment, then
+   applies exactly that saved plan. If anything changed state in between, Terraform rejects
+   the stale plan, and the next run plans afresh.
 
-## One-time state bucket bootstrap
+See [docs/terraform-pipeline.md](../../docs/terraform-pipeline.md) for details.
 
-```bash
-export AWS_REGION=us-east-1
-BUCKET="tfstate-$(aws sts get-caller-identity --query Account --output text)-$AWS_REGION"
-aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"   # outside us-east-1 add: --create-bucket-configuration LocationConstraint=$AWS_REGION
-aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
-aws s3api put-public-access-block --bucket "$BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-aws s3api put-bucket-encryption --bucket "$BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-```
+## Inputs
 
-Versioning lets you recover earlier state; locking uses S3's native lock file (`use_lockfile`),
-so no DynamoDB table is needed.
+In CI these come from `TF_VAR_*` environment variables, set from repository variables.
 
-## Deploy
+| Variable                   | Source in CI                       | Default         |
+| -------------------------- | ---------------------------------- | --------------- |
+| `github_repository`        | `github.repository`                | required        |
+| `aws_region`               | `vars.AWS_REGION`                  | `us-east-1`     |
+| `permissions_boundary_arn` | `vars.TF_PERMISSIONS_BOUNDARY_ARN` | required        |
+| `project_name`             | (default)                          | `task-platform` |
+| `github_branch`            | (default)                          | `main`          |
+| `image_retention_count`    | (default)                          | `30`            |
 
-```bash
-cd infra/terraform
-cp backend.hcl.example backend.hcl          # set bucket (and region)
-cp terraform.tfvars.example terraform.tfvars # set github_repository
-terraform init -backend-config=backend.hcl
-terraform plan -out=tfplan                   # review: expect 7 to add on first run
-terraform apply tfplan
-```
-
-If the account already has a `token.actions.githubusercontent.com` provider, set
-`create_github_oidc_provider = false`; the existing provider is then looked up and reused.
-
-Then copy the outputs into GitHub (Settings → Secrets and variables → Actions → **Variables**):
-
-| Output                    | GitHub variable                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `github_actions_role_arn` | `AWS_ROLE_ARN`                                                                  |
-| `aws_region`              | `AWS_REGION`                                                                    |
-| `ecr_repository_names`    | `ECR_REPOSITORY_BACKEND` / `ECR_REPOSITORY_FRONTEND` (only if not the defaults) |
-
-The next push to `main` publishes both images as `<registry>/task-platform/<tier>:<git-sha>`.
-
-## Local checks
+## Local checks (no AWS access needed)
 
 ```bash
 terraform fmt -check -recursive
@@ -78,12 +57,12 @@ terraform validate
 terraform test        # mocked AWS: no credentials needed, nothing created
 ```
 
-## Rollback / teardown
+Running a real `plan` locally needs `backend.hcl` and `terraform.tfvars` (copy the
+`.example` files) and credentials that can read the state bucket.
 
-- Changes: revert the commit, then `plan` and `apply`. State versions in S3 let you inspect
-  what was applied before.
-- Teardown: delete the images first (repositories are not force-deleted, so images are never
-  lost by accident). Then run `terraform plan -destroy -out=destroy.tfplan`, review every
-  resource listed, and `terraform apply destroy.tfplan`. Removing the OIDC provider affects
-  any other role in the account that trusts it; set `create_github_oidc_provider = false`
-  first if it is shared.
+## Teardown
+
+Delete the images first (repositories are not force-deleted, so images are never lost by
+accident). Then, as an administrator, run `terraform plan -destroy -out=destroy.tfplan`,
+review every resource listed, and `terraform apply destroy.tfplan`. The pipeline roles
+deliberately cannot destroy the state they live in.

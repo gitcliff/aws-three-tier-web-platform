@@ -53,11 +53,15 @@ variable "image_retention_count" {
   }
 }
 
-variable "create_github_oidc_provider" {
+variable "permissions_boundary_arn" {
   description = <<-EOT
-    Create the GitHub Actions OIDC identity provider. An AWS account can hold only one
-    provider per URL, so set to false when it already exists (it is then looked up).
+    Permissions boundary attached to the push role (output app_role_permissions_boundary_arn
+    of infra/bootstrap). The Terraform apply role can only create roles that carry it.
   EOT
-  type        = bool
-  default     = true
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$", var.permissions_boundary_arn))
+    error_message = "permissions_boundary_arn must be an IAM policy ARN."
+  }
 }

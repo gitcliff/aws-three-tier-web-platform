@@ -16,6 +16,11 @@ updates:
     schedule:
       interval: weekly
 
+  - package-ecosystem: terraform
+    directories: ['/infra/bootstrap', '/infra/terraform']
+    schedule:
+      interval: weekly
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

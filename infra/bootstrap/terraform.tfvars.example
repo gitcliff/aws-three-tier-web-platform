@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (git-ignored). No secrets belong here.
+aws_region               = "us-east-1"
+project_name             = "task-platform"
+github_repository        = "gitcliff/aws-three-tier-web-platform"
+github_branch            = "main"
+github_apply_environment = "infrastructure"

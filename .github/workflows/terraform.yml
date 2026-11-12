@@ -1,0 +1,222 @@
+# Infrastructure pipeline for infra/terraform (ECR repositories + image push role).
+#
+#   validate (both stacks): fmt · validate · mocked tests      ┐ no AWS credentials
+#   security: Trivy misconfiguration + secret scan of infra/   ┘
+#        ▼
+#   plan   (read-only role)  PRs: plan shown in the job summary
+#                            main: plan saved as an artifact
+#        ▼   push to main only, only if the plan has changes
+#   apply  (apply role)      waits in the "infrastructure" environment for a reviewer's
+#                            approval, then applies exactly the saved plan
+#
+# infra/bootstrap (state bucket, OIDC provider, these roles) is validated and tested here
+# but deliberately never planned or applied by CI: it defines the pipeline's own
+# permissions, so an administrator applies it by hand (see infra/bootstrap/README.md).
+
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['infra/**', '.github/workflows/terraform.yml']
+  push:
+    branches: [main]
+    paths: ['infra/**', '.github/workflows/terraform.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref at a time. PR runs may be superseded; runs on main never are, so an
+  # apply is never interrupted midway.
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TF_VERSION: 1.15.7
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  validate:
+    name: Validate & test (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [bootstrap, terraform]
+    defaults:
+      run:
+        working-directory: infra/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Init (no backend; providers from the committed lock file)
+        run: terraform init -backend=false -lockfile=readonly
+      - name: Validate
+        run: terraform validate
+      - name: Test (mocked AWS provider; no credentials, nothing created)
+        run: terraform test
+
+  security:
+    name: Trivy (misconfig, secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan infra/
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/infra:/src:ro" "$TRIVY_IMAGE" \
+            fs --scanners misconfig,secret --severity HIGH,CRITICAL --exit-code 1 /src
+      - name: Note when AWS access is not configured
+        if: vars.TF_PLAN_ROLE_ARN == ''
+        run: echo "::warning::TF_PLAN_ROLE_ARN is not set; plan and apply are skipped. See infra/bootstrap/README.md."
+
+  plan:
+    name: Plan
+    needs: [validate, security]
+    # Fork PRs get no OIDC token, so plans run only for branches of this repository.
+    if: >-
+      vars.TF_PLAN_ROLE_ARN != '' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      TF_VAR_github_repository: ${{ github.repository }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_permissions_boundary_arn: ${{ vars.TF_PERMISSIONS_BOUNDARY_ARN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Authenticate to AWS (read-only plan role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-plan-${{ github.run_id }}
+          role-duration-seconds: 900
+      - name: Init
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          STATE_KEY: ${{ vars.TF_STATE_KEY || 'task-platform/ecr/terraform.tfstate' }}
+          AWS_REGION_NAME: ${{ vars.AWS_REGION }}
+        run: |
+          terraform init -lockfile=readonly \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION_NAME" \
+            -backend-config="use_lockfile=true"
+      - name: Plan
+        id: plan
+        # The plan role cannot write the lock file, so plans run without a lock. Safety comes
+        # from apply: a saved plan is rejected if state changed after it was made.
+        run: |
+          set +e
+          terraform plan -lock=false -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          if [ "$code" -eq 2 ]; then echo "changes=true" >> "$GITHUB_OUTPUT"; else echo "changes=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Plan summary
+        run: |
+          {
+            echo "## Terraform plan (${GITHUB_EVENT_NAME})"
+            echo
+            echo '```'
+            terraform show -no-color tfplan | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save plan for apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.plan.outputs.changes == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan-${{ github.sha }}
+          path: infra/terraform/tfplan
+          retention-days: 5
+
+  apply:
+    name: Apply (requires approval)
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Protected in GitHub (Settings → Environments): required reviewers + main branch only.
+    # The apply role trusts only tokens issued to jobs in this environment.
+    environment: infrastructure
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Authenticate to AWS (apply role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-apply-${{ github.run_id }}
+          role-duration-seconds: 1800
+      - name: Init
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          STATE_KEY: ${{ vars.TF_STATE_KEY || 'task-platform/ecr/terraform.tfstate' }}
+          AWS_REGION_NAME: ${{ vars.AWS_REGION }}
+        run: |
+          terraform init -lockfile=readonly \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION_NAME" \
+            -backend-config="use_lockfile=true"
+      - name: Download the reviewed plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tfplan-${{ github.sha }}
+          path: infra/terraform
+      - name: Apply exactly the reviewed plan
+        # No re-plan here: the approved artifact is applied as-is, under the state lock.
+        run: terraform apply tfplan
+      - name: Outputs
+        run: |
+          {
+            echo "## Applied"
+            echo '```'
+            terraform output -no-color
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

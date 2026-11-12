@@ -12,7 +12,7 @@ locals {
       {
         Sid       = "GitHubActionsMainBranchOnly"
         Effect    = "Allow"
-        Principal = { Federated = local.github_oidc_arn }
+        Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
         Action    = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
@@ -58,6 +58,8 @@ resource "aws_iam_role" "github_ecr_push" {
   description          = "Assumed by GitHub Actions (${var.github_repository}@${var.github_branch}) to push images to ECR"
   assume_role_policy   = local.ecr_push_trust_policy
   max_session_duration = 3600
+  # Required by the Terraform apply role; caps this role at "push to project repositories".
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role_policy" "github_ecr_push" {

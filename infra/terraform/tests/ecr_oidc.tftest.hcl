@@ -2,10 +2,19 @@
 # nothing created. `command = apply` runs against the mock so computed values (ARNs) exist
 # and the rendered IAM policies can be decoded and checked.
 
-mock_provider "aws" {}
+mock_provider "aws" {
+  # The shared provider created by infra/bootstrap.
+  override_data {
+    target = data.aws_iam_openid_connect_provider.github
+    values = {
+      arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+    }
+  }
+}
 
 variables {
-  github_repository = "acme/task-app"
+  github_repository        = "acme/task-app"
+  permissions_boundary_arn = "arn:aws:iam::123456789012:policy/task-platform-app-role-boundary"
 }
 
 run "creates_hardened_ecr_repositories" {
@@ -67,9 +76,9 @@ run "trust_policy_admits_only_main_branch_of_this_repo" {
   assert {
     condition = (
       jsondecode(aws_iam_role.github_ecr_push.assume_role_policy).Statement[0].Principal.Federated
-      == aws_iam_openid_connect_provider.github[0].arn
+      == "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
     )
-    error_message = "Role must trust the GitHub OIDC provider created by this configuration."
+    error_message = "Role must trust the shared GitHub OIDC provider."
   }
 
   assert {
@@ -78,8 +87,8 @@ run "trust_policy_admits_only_main_branch_of_this_repo" {
   }
 
   assert {
-    condition     = aws_iam_openid_connect_provider.github[0].client_id_list == toset(["sts.amazonaws.com"])
-    error_message = "OIDC provider must only accept the sts.amazonaws.com audience."
+    condition     = aws_iam_role.github_ecr_push.permissions_boundary == "arn:aws:iam::123456789012:policy/task-platform-app-role-boundary"
+    error_message = "The push role must carry the pipeline's permissions boundary."
   }
 }
 
@@ -129,32 +138,14 @@ run "permissions_are_push_only_and_scoped" {
   }
 }
 
-run "reuses_an_existing_oidc_provider" {
-  command = apply
+run "rejects_missing_or_malformed_boundary" {
+  command = plan
 
   variables {
-    create_github_oidc_provider = false
+    permissions_boundary_arn = "not-an-arn"
   }
 
-  override_data {
-    target = data.aws_iam_openid_connect_provider.github[0]
-    values = {
-      arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
-    }
-  }
-
-  assert {
-    condition     = length(aws_iam_openid_connect_provider.github) == 0
-    error_message = "No provider may be created when reusing an existing one."
-  }
-
-  assert {
-    condition = (
-      jsondecode(aws_iam_role.github_ecr_push.assume_role_policy).Statement[0].Principal.Federated
-      == "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
-    )
-    error_message = "Role must trust the existing provider."
-  }
+  expect_failures = [var.permissions_boundary_arn]
 }
 
 run "custom_branch_and_retention" {
