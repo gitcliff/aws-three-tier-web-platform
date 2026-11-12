@@ -1,96 +1,117 @@
-# Implementation Plan
+# Implementation plan and decisions
 
-The platform is built in reviewable phases. Each phase ends in a working, verified state
-and is committed on its own.
+The platform was built in reviewable phases. Each phase ended in a working, verified state
+and was committed on its own. This document records what each phase delivered, how it was
+verified, and the decisions behind it. The [README](../README.md) describes the result.
 
-## Target repository structure
+## Final repository structure
 
 ```text
 aws-three-tier-web-platform/
-├── .github/workflows/
-│   └── ci-cd.yml               # quality → security scans → image build/scan → ECR push (OIDC)
-├── backend/                    # Application tier: Node.js + Express + TypeScript REST API
+├── .github/
+│   ├── workflows/ci-cd.yml       # app: quality + security gates → image build/scan → ECR push (OIDC)
+│   ├── workflows/terraform.yml   # infra: validate/test/scan → plan → approved apply
+│   └── dependabot.yml
+├── backend/                      # Application tier (Express 5 + TypeScript)
 │   ├── src/
-│   │   ├── config/             # env parsing and validation (fails fast on bad config)
-│   │   ├── db/                 # pg Pool, migration runner
-│   │   ├── middleware/         # error handler, request validation, 404
-│   │   ├── tasks/              # routes → service → repository (parameterized SQL)
-│   │   ├── app.ts              # Express app factory (no listen; testable)
-│   │   └── server.ts           # process entrypoint, graceful shutdown
-│   ├── tests/                  # unit tests + integration tests against real PostgreSQL
-│   ├── .env.example
-│   └── package.json / package-lock.json
-├── frontend/                   # Presentation tier: React + TypeScript + Tailwind (Vite)
-│   ├── src/
-│   │   ├── api/                # typed API client
-│   │   ├── components/         # TaskForm, TaskList, TaskItem, filters
-│   │   └── hooks/              # useTasks state hook
-│   ├── tests/
-│   └── package.json / package-lock.json
+│   │   ├── config/               # env validation (fails fast, never echoes values)
+│   │   ├── db/                   # pg pool, migration runner
+│   │   ├── http/                 # input validation helper, error + 404 handlers
+│   │   ├── tasks/                # schema → routes → service → repository
+│   │   ├── app.ts                # Express app factory (no I/O; used by tests)
+│   │   ├── server.ts             # entrypoint, graceful shutdown
+│   │   └── migrate.ts            # one-shot migration entrypoint
+│   └── tests/{unit,integration}/
+├── frontend/                     # Presentation tier (Vite + React 19 + Tailwind 4)
+│   ├── src/{api,hooks,lib,components}/
+│   └── tests/
 ├── database/
-│   ├── init/                   # one-time role bootstrap (least-privilege app role)
-│   └── migrations/             # versioned, forward-only SQL migrations
+│   ├── init/                     # first-boot creation of the least-privilege app role
+│   └── migrations/               # forward-only SQL
 ├── docker/
-│   ├── backend.Dockerfile      # multi-stage, node:alpine, non-root
-│   ├── frontend.Dockerfile     # multi-stage, unprivileged nginx, non-root
-│   └── nginx.conf              # serves SPA, proxies /api to backend, security headers
-├── infra/terraform/            # ECR repos + GitHub OIDC provider + least-privilege IAM role
-├── docs/                       # architecture decisions, this plan, runbooks
-├── docker-compose.yml          # db + migrate (one-shot) + api + web
-├── .env.example                # compose-level variables (no real secrets)
-├── .gitleaks.toml / .trivyignore
-└── README.md
+│   ├── backend.Dockerfile
+│   ├── frontend.Dockerfile
+│   └── nginx/                    # site template + security-header snippet
+├── infra/
+│   ├── bootstrap/                # admin-applied: state bucket, OIDC provider, pipeline roles, boundary
+│   └── terraform/                # pipeline-applied: ECR repositories + image push role
+├── docs/
+├── docker-compose.yml
+└── .env.example, .gitleaks.toml, .dockerignore, .prettierrc.json, .editorconfig, .nvmrc
 ```
 
-`infra/terraform/` is an addition to the requested layout: ECR repositories and IAM need to
-be created somehow, and doing it as code is reviewable and repeatable, where console clicks are not.
+Compared with the requested layout, `infra/` was added. ECR and IAM have to be created
+somehow, and as code they are reviewable, tested and repeatable.
 
 ## Phases
 
-| Phase | Scope                                                                                           | Verified by                                                     |
-| ----- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1     | Repo scaffold, Prettier, env example, PostgreSQL in Compose, roles, first migration             | DB healthy, migration applies, app role is DML-only             |
-| 2     | Backend API: config, pool, migration runner, CRUD routes, validation, error handling            | ESLint, unit + integration tests (Vitest + Supertest), curl     |
-| 3     | Frontend: Vite React app, Tailwind UI, API client, create/edit/toggle/delete/filter             | ESLint, component tests (Vitest + Testing Library), browser run |
-| 4     | Containerization: multi-stage Dockerfiles, nginx, full Compose with health checks + migrate job | `docker compose up`, end-to-end smoke test, local Trivy scan    |
-| 5     | CI/CD: GitHub Actions with Prettier, lint, tests, Gitleaks, Trivy SCA/fs/config/image, ECR push | `actionlint`, local dry runs of each scanner                    |
-| 6     | AWS: Terraform for ECR (scan on push, immutable tags) + OIDC provider + least-privilege role    | `terraform validate` / `fmt` / plan                             |
-| 7     | Documentation: full README with Mermaid diagram, env reference, pipeline, AWS setup, security   | Review                                                          |
+| Phase | Delivered                                                                                              | Verified by                                                                                                |
+| ----- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 1     | Scaffold, Prettier, env example, PostgreSQL in Compose, owner/app roles, first migration               | fresh-volume run: migration applies, app role DML-only (`DROP`/`CREATE`/`TRUNCATE` refused), data persists |
+| 2     | Backend: config, pool, migration runner, CRUD API, validation, central error handling, health, logging | ESLint, 44 unit + 10 integration tests on real PostgreSQL, curl against the built server                   |
+| 3     | Frontend: typed client, `useTasks`, create/edit/toggle/delete/filter, loading/empty/error states, a11y | ESLint, 22 tests, manual run in a browser against the real API (desktop, mobile, light, dark)              |
+| 4     | Multi-stage Dockerfiles, nginx with CSP, full Compose with health-gated startup and hardening          | end-to-end smoke test, network isolation, read-only FS, graceful stop; Trivy: 0 findings                   |
+| 5     | `ci-cd.yml`: all 12 required steps; SHA/digest pinning; SBOMs; Dependabot                              | actionlint; every stage dry-run locally; negative controls (planted secret, vulnerable dependency)         |
+| 6     | Terraform: ECR (immutable, scan on push, lifecycle) + GitHub OIDC + push-only role                     | 8 mocked tests, mutation checks, Trivy, read-only `plan` against the real account                          |
+| 6b    | Separate Terraform pipeline; bootstrap stack (state, plan/apply roles, permissions boundary)           | 8 + 8 mocked tests, mutation checks, 25/25 AWS IAM policy-simulator decisions, read-only `plan`            |
+| 7     | README and documentation                                                                               | commands and links checked against the repository                                                          |
 
 ## Key decisions
 
-**Separate lockfiles per tier (no npm workspaces).** Each tier is built and containerized
-independently. A Docker build of `backend/` needs only `backend/package-lock.json`, so image
-builds stay small and cache well, and a frontend dependency change never invalidates the
-backend image.
+### Application
 
-**Plain SQL migrations plus a small runner.** Migrations are reviewable `.sql` files in
-`database/migrations`. The backend ships a ~50-line runner that applies pending files in
-order, each inside a transaction, recording them in `schema_migrations` under an advisory
-lock so concurrent starts are safe. In Compose this runs as a one-shot `migrate` service
-before the API starts, so the long-running API process never needs DDL rights. Migrations
-are forward-only: a change is undone with a new migration, which matches how production
-databases are actually changed.
+- **Separate lockfiles per tier (no npm workspaces).** Each image needs only its own
+  lockfile, so builds cache well and one tier's dependency change never rebuilds the other.
+- **Layered backend** (`routes → service → repository`) behind interfaces. Unit tests swap
+  PostgreSQL for an in-memory repository, while integration tests use a real database.
+- **Validation in two places.** Zod in the API gives precise 400s, and `CHECK` constraints
+  in PostgreSQL stop bad data arriving by any other path.
+- **`status` as `TEXT` + `CHECK`** rather than an `ENUM`. It's just as strict, and adding a
+  value later is simpler.
+- **Server is the source of truth in the UI.** Mutations wait for the API response, so the
+  UI never shows state the server rejected.
+- **Relative `/api` path.** It is proxied by Vite in development and nginx in containers, so
+  there's no CORS, no URLs in the bundle, and one image for every environment.
 
-**Two database roles.**
+### Data
 
-- `POSTGRES_USER` (owner) owns the schema and runs migrations.
-- `APP_DB_USER` is what the API uses: `CONNECT` plus `SELECT/INSERT/UPDATE/DELETE` through
-  default privileges. It cannot create, alter or drop objects.
+- **Two database roles.** The owner runs migrations in a one-shot job, and the API connects
+  as a DML-only role. A SQL injection bug in the API can't change the schema.
+- **Forward-only SQL migrations** with a small runner: one transaction per file, an advisory
+  lock for concurrent starts, and checksums so an edited migration is detected.
+- **`updated_at` by trigger**, so it is correct whatever code path writes the row.
 
-A SQL injection bug in the API therefore cannot drop tables or change the schema.
+### Containers
 
-**Validation in two layers.** The API validates input with Zod and returns clean 400s. The
-database repeats the important rules as `CHECK` constraints (non-blank title, length limits,
-status enum), so bad data cannot get in through any other path either.
+- **Multi-stage, non-root, minimal.** The API image has no compiler or package managers.
+  OS patches are applied at build, and base images are pinned by digest.
+- **Liveness vs readiness.** Liveness never touches the database, so a database outage
+  doesn't trigger restart loops. Readiness gates traffic.
+- **nginx owns the browser security headers.** Duplicates from the API (Helmet) are removed
+  at the proxy so browsers never see conflicting values.
+- **`.dockerignore` as an allowlist**, so new files (e.g. a stray `.env`) are excluded by
+  default.
 
-**`status` as `TEXT` + `CHECK`, not a PostgreSQL `ENUM`.** It is just as strict, and adding a
-value later is a one-line constraint change rather than an `ALTER TYPE`, which has
-transaction caveats.
+### Delivery
 
-**`updated_at` maintained by trigger**, so it is correct whatever code path writes the row.
+- **Scan what you ship.** Each image is built once to a tarball, scanned, then that same
+  tarball is pushed.
+- **Gate threshold:** HIGH/CRITICAL with a fix available, plus any secret or HIGH/CRITICAL
+  misconfiguration. Unfixable findings are reported, and they block as soon as a fix exists.
+- **Immutable commit-SHA tags.** Re-running the pipeline for an existing tag is a no-op.
+- **No secrets in CI.** AWS access is OIDC-only, and repository variables hold identifiers
+  only.
 
-**Secrets only through the environment.** Compose reads them from a git-ignored `.env`, and
-`${VAR:?}` makes Compose refuse to start if one is missing rather than silently using a
-default. Images never contain `.env` files (see `.dockerignore` in Phase 4). The database
-port is bound to `127.0.0.1` only.
+### Infrastructure
+
+- **Two Terraform stacks.** `bootstrap` holds what the pipeline depends on and defines its
+  permissions, so an administrator applies it. `terraform` (ECR + push role) is delivered by
+  the pipeline.
+- **Plan and apply separation.** Plans use a read-only role. Applies use a separate role that
+  trusts only the approval-gated `infrastructure` environment, and they apply exactly the
+  reviewed plan.
+- **No privilege escalation.** The apply role can create roles only with a permissions
+  boundary limited to ECR push, can't remove boundaries or modify its own identity, and can
+  reach only the ECR stack's state.
+- **Policies as `jsonencode` locals** rather than data sources, so `terraform test` with a
+  mocked provider can assert on their real content.
