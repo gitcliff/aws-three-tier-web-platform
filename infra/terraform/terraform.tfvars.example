@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (git-ignored) and adjust. No secrets belong here.
+aws_region        = "us-east-1"
+project_name      = "task-platform"
+github_repository = "your-github-user/aws-three-tier-web-platform"
+github_branch     = "main"
+
+# Set to false if the account already has the token.actions.githubusercontent.com provider.
+create_github_oidc_provider = true

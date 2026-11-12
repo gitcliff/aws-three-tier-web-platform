@@ -32,3 +32,6 @@ gitleaks-report.json
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# Terraform backend settings (account-specific)
+infra/terraform/backend.hcl

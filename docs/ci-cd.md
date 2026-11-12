@@ -11,6 +11,7 @@ flowchart LR
     F[Prettier]
     B["Backend<br/>types · lint · unit · integration"]
     W["Frontend<br/>types · lint · tests · build"]
+    T["Terraform<br/>fmt · validate · mocked tests"]
     G[Gitleaks<br/>full git history]
     S[Trivy SCA<br/>npm lockfiles]
     R[Trivy fs<br/>vuln · misconfig · secret]
@@ -25,7 +26,7 @@ flowchart LR
 | 2   | Node.js version              | `actions/setup-node` reading `.nvmrc`                                      |
 | 3   | Install from lockfiles       | `npm ci --ignore-scripts` per package                                      |
 | 4   | Format verification          | `format` job: `prettier --check .`                                         |
-| 5   | Lint and tests               | `backend` (with a PostgreSQL service) and `frontend` jobs                  |
+| 5   | Lint and tests               | `backend` (with a PostgreSQL service), `frontend` and `terraform` jobs     |
 | 6   | Secret scanning              | `secrets` job: Gitleaks over the entire git history                        |
 | 7   | SCA                          | `sca` job: Trivy on every `package-lock.json`, dev dependencies included   |
 | 8   | Filesystem scan              | `fs-scan` job: Trivy vulnerabilities + misconfigurations + secrets         |
@@ -52,8 +53,8 @@ published unless every check passed**.
 
 - **No long-lived AWS keys.** The `publish` job requests a GitHub OIDC token
   (`id-token: write`) and exchanges it for 15-minute credentials for one IAM role. That role
-  trusts only this repository's `main` branch and may only push to the two ECR repositories
-  (Phase 6 creates it).
+  trusts only this repository's `main` branch and may only push to the two ECR repositories.
+  It is defined in [`infra/terraform`](../infra/terraform/README.md).
 - **Credentials only where needed.** The workflow default is `contents: read`. Pull
   requests, including those from forks, never reach the `publish` job, and the jobs that
   build and test code never receive AWS credentials.
