@@ -21,12 +21,12 @@ flowchart LR
 
 ## Stages
 
-| Job        | Runs on                    | AWS access                     | Does                                                                                                                   |
-| ---------- | -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `validate` | PRs, main                  | none                           | `fmt -check`, `init -backend=false -lockfile=readonly`, `validate`, `test` for `infra/bootstrap` and `infra/terraform` |
-| `security` | PRs, main                  | none                           | Trivy misconfiguration + secret scan of `infra/`; fails on HIGH/CRITICAL                                               |
-| `plan`     | PRs from this repo, main   | **plan role** (read-only)      | `plan -detailed-exitcode -out=tfplan`; plan rendered into the job summary; on `main` the plan is uploaded              |
-| `apply`    | main, only if plan changed | **apply role**, after approval | downloads the saved plan and runs `terraform apply tfplan`                                                             |
+| Job        | Runs on                    | AWS access                     | Does                                                                                                                                                       |
+| ---------- | -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validate` | PRs, main                  | none                           | `fmt -check`, `init -backend=false -lockfile=readonly`, `validate`, `test` for `infra/bootstrap`, `infra/terraform` and each module under `infra/modules/` |
+| `security` | PRs, main                  | none                           | Trivy misconfiguration + secret scan of `infra/`; fails on HIGH/CRITICAL                                                                                   |
+| `plan`     | PRs from this repo, main   | **plan role** (read-only)      | `plan -detailed-exitcode -out=tfplan`; plan rendered into the job summary; on `main` the plan is uploaded                                                  |
+| `apply`    | main, only if plan changed | **apply role**, after approval | downloads the saved plan and runs `terraform apply tfplan`                                                                                                 |
 
 ## Controls and why
 

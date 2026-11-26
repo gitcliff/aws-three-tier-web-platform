@@ -47,7 +47,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        stack: [bootstrap, terraform]
+        # Root stacks and every reusable module (each module carries its own mocked tests).
+        stack: [bootstrap, terraform, modules/network]
     defaults:
       run:
         working-directory: infra/${{ matrix.stack }}

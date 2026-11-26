@@ -411,7 +411,7 @@ unless every check passed. Details: [docs/ci-cd.md](docs/ci-cd.md).
 
 Runs when `infra/` changes. Steps:
 
-1. **validate**, for both stacks: `fmt`, `validate`, and `terraform test` against a mocked
+1. **validate**, for both stacks and every module: `fmt`, `validate`, and `terraform test` against a mocked
    AWS provider.
 2. **security**: a Trivy scan of `infra/`.
 3. **plan**, using a read-only role. The plan appears in the job summary, and on `main` it is
